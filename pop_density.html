@@ -8,6 +8,11 @@
     <link href="https://api.mapbox.com/mapbox-gl-js/v2.5.0/mapbox-gl.css" rel="stylesheet">
     <script src="https://api.mapbox.com/mapbox-gl-js/v2.5.0/mapbox-gl.js"></script>
     <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
         h2, h3 {
             margin: 10px;
             font-size: 18px;
@@ -28,13 +33,14 @@
             left: 0;
             right: 0;
             width: 100%;
+            height: 100%;
         }
 
         .map-overlay {
             position: absolute;
             bottom: 0;
             left: 0;
-            background: rgba(255, 255, 255, 0.8);
+            background: rgba(255, 255, 255, 0.9);
             border-style: solid;
             border-width: 1px;
             border-color: rgba(0, 0, 0, 0.2);
@@ -67,15 +73,28 @@
             height: 10px;
             margin-right: 5px;
         }
-        
+
         .mapboxgl-canvas-container.mapboxgl-interactive,
         .mapboxgl-ctrl-group button.mapboxgl-ctrl-compass {
             cursor: unset;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
         }
     </style>
 </head>
 
 <body>
+    <div id="loading">Loading map...</div>
     <div id="map"></div>
     <div class='map-overlay' id='features'>
         <h2>US population density</h2>
@@ -84,9 +103,134 @@
         </div>
     </div>
     <div class='map-overlay' id='legend'></div>
+
     <script>
+        // Check if Mapbox loaded correctly
+        if (typeof mapboxgl === 'undefined') {
+            document.getElementById('loading').innerHTML = 'Error: Mapbox GL JS failed to load';
+            throw new Error('Mapbox GL JS not loaded');
+        }
+
+        mapboxgl.accessToken = 'pk.eyJ1IjoiamRlbmcxMzciLCJhIjoiY21oY3BwdGxtMW93bDJsb282bnl6bWl0NSJ9.t19u2LlOUGTPHQ7N82CpkA';
+
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/light-v10',
+            zoom: 3,
+            center: [-100, 40]
+        });
+
+        // Wait for map to load first, then fetch and add data
+        map.on('load', function() {
+            document.getElementById('loading').style.display = 'none';
+            
+            // Try to load local file first, fallback to online data
+            fetch('assets/state_data.geojson')
+                .then(response => {
+                    if (!response.ok) {
+                        console.warn('Local file not found, using online data');
+                        // Fallback to online data if local file doesn't exist
+                        return fetch('https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json');
+                    }
+                    return response;
+                })
+                .then(response => response.json())
+                .then(stateData => {
+                    console.log('Data loaded successfully:', stateData);
+
+                    // Add data source
+                    map.addSource('stateData', {
+                        type: 'geojson',
+                        data: stateData
+                    });
+
+                    // Add choropleth layer using step colors
+                    map.addLayer({
+                        'id': 'stateData-layer',
+                        'type': 'fill',
+                        'source': 'stateData',
+                        'paint': {
+                            'fill-color': [
+                                'step',
+                                ['get', 'density'],
+                                '#FFEDA0', // <10
+                                10, '#FED976',
+                                20, '#FEB24C',
+                                50, '#FD8D3C',
+                                100, '#FC4E2A',
+                                200, '#E31A1C',
+                                500, '#BD0026',
+                                1000, '#800026' // >=1000
+                            ],
+                            'fill-outline-color': '#BBBBBB',
+                            'fill-opacity': 0.7
+                        }
+                    });
+
+                    // Build legend
+                    const layers = [
+                        '0-9',
+                        '10-19',
+                        '20-49',
+                        '50-99',
+                        '100-199',
+                        '200-499',
+                        '500-999',
+                        '1000 and more'
+                    ];
+                    const colors = [
+                        '#FFEDA070',
+                        '#FED97670',
+                        '#FEB24C70',
+                        '#FD8D3C70',
+                        '#FC4E2A70',
+                        '#E31A1C70',
+                        '#BD002670',
+                        '#80002670'
+                    ];
+
+                    const legend = document.getElementById('legend');
+                    legend.innerHTML = '<b>Population Density<br>(people/sq.mi.)</b><br><br>';
+                    
+                    layers.forEach((layer, i) => {
+                        const item = document.createElement('div');
+                        const key = document.createElement('span');
+                        key.className = 'legend-key';
+                        key.style.backgroundColor = colors[i];
+
+                        const value = document.createElement('span');
+                        value.innerHTML = layer;
+                        item.appendChild(key);
+                        item.appendChild(value);
+                        legend.appendChild(item);
+                    });
+
+                    console.log('Legend built successfully');
+
+                    // Hover interaction
+                    map.on('mousemove', ({point}) => {
+                        const state = map.queryRenderedFeatures(point, {
+                            layers: ['stateData-layer']
+                        });
+                        document.getElementById('text-description').innerHTML = state.length ?
+                            `<h3>${state[0].properties.name}</h3><p><strong><em>${state[0].properties.density}</strong> people per square mile</em></p>` :
+                            `<p>Hover over a state!</p>`;
+                    });
+
+                    console.log('All interactions set up successfully');
+                })
+                .catch(error => {
+                    console.error('Error loading GeoJSON:', error);
+                    document.getElementById('text-description').innerHTML = 
+                        `<p style="color: red;">Error: ${error.message}<br>Check console for details</p>`;
+                    document.getElementById('loading').innerHTML = 'Error loading data - see console';
+                });
+        });
+
+        map.on('error', (e) => {
+            console.error('Map error:', e);
+            document.getElementById('loading').innerHTML = 'Map error - check console';
+        });
     </script>
-
 </body>
-
 </html>
